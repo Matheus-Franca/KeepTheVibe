@@ -1,11 +1,15 @@
 """KeepTheVibe - aplicação Streamlit principal."""
 from html import escape
+import os
 import pandas as pd
 import streamlit as st
 
 from src import auth
 from src.api_spotify import SpotifyAPIError, create_playlist, get_top_tracks, get_track_covers, get_user
+from src.demo import create_demo_playlist, get_demo_top_tracks, load_demo_dataset
 from src.recommender import CONTEXT_TAGS, VibeRecommender, load_dataset
+
+DEMO_MODE = os.getenv("KTV_DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 st.set_page_config(page_title="KeepTheVibe", page_icon="🎧", layout="wide")
 st.markdown("""
@@ -21,47 +25,58 @@ st.markdown("""
 
 
 @st.cache_resource
-def get_engine() -> VibeRecommender:
-    return VibeRecommender(load_dataset())
+def get_engine(demo_mode: bool = False) -> VibeRecommender:
+    dataset = load_demo_dataset() if demo_mode else load_dataset()
+    return VibeRecommender(dataset)
 
 
 def brand():
     st.markdown('<p class="ktv-title">Keep<span>The</span>Vibe</p>', unsafe_allow_html=True)
 
 
-# ---------- Tela de entrada (RF01) ----------
-auth.handle_callback()
-token = auth.ensure_valid_token()
+if DEMO_MODE:
+    token = None
+    st.session_state["display_name"] = "Demonstração local"
+else:
+    # ---------- Tela de entrada (RF01) ----------
+    auth.handle_callback()
+    token = auth.ensure_valid_token()
 
-if not token:
-    _, mid, _ = st.columns([1, 2, 1])
-    with mid:
-        st.write(""); st.write("")
-        brand()
-        st.markdown('<p class="ktv-sub">Playlists que acompanham a sua vibe do momento — não a média do algoritmo. '
-                    'Ajuste energia e humor, escolha o contexto e salve direto no seu Spotify.</p>',
-                    unsafe_allow_html=True)
+    if not token:
+        _, mid, _ = st.columns([1, 2, 1])
+        with mid:
+            st.write(""); st.write("")
+            brand()
+            st.markdown('<p class="ktv-sub">Playlists que acompanham a sua vibe do momento — não a média do algoritmo. '
+                        'Ajuste energia e humor, escolha o contexto e salve direto no seu Spotify.</p>',
+                        unsafe_allow_html=True)
+            try:
+                st.link_button("🎧 Conectar com Spotify", auth.get_login_url(), type="primary", use_container_width=True)
+            except KeyError:
+                st.error("Credenciais ausentes. Configure .streamlit/secrets.toml (veja o README).")
+        st.stop()
+
+    if "user_id" not in st.session_state:
         try:
-            st.link_button("🎧 Conectar com Spotify", auth.get_login_url(), type="primary", use_container_width=True)
-        except KeyError:
-            st.error("Credenciais ausentes. Configure .streamlit/secrets.toml (veja o README).")
-    st.stop()
+            user = get_user(token)
+            st.session_state["user_id"] = user["id"]
+            st.session_state["display_name"] = user.get("display_name") or user["id"]
+        except SpotifyAPIError as e:
+            st.error(str(e)); auth.logout(); st.stop()
 
-if "user_id" not in st.session_state:
-    try:
-        user = get_user(token)
-        st.session_state["user_id"] = user["id"]
-        st.session_state["display_name"] = user.get("display_name") or user["id"]
-    except SpotifyAPIError as e:
-        st.error(str(e)); auth.logout(); st.stop()
+if DEMO_MODE:
+    st.info("Modo de demonstração: faixas e playlists são fictícias e ficam apenas nesta sessão.")
 
-engine = get_engine()
+engine = get_engine(DEMO_MODE)
 df = engine.df
 
 # ---------- Sidebar: modo + vibe (RF02/RF03) ----------
 with st.sidebar:
     brand()
-    st.caption(f"Conectado como **{st.session_state['display_name']}**")
+    if DEMO_MODE:
+        st.caption("Modo de demonstração")
+    else:
+        st.caption(f"Conectado como **{st.session_state['display_name']}**")
     mode = st.radio("Modo de recomendação", ["Modo 1: Análise de Perfil", "Modo 2: Seleção Direta"])
     st.divider()
     st.subheader("Vibe do momento")
@@ -72,8 +87,10 @@ with st.sidebar:
     tags = st.multiselect("Tags de contexto", list(CONTEXT_TAGS))
     n_tracks = st.slider("Tamanho da playlist", 10, 50, 20, 5)
     st.divider()
-    if st.button("Sair", use_container_width=True):
-        auth.logout(); st.rerun()
+    if st.button("Limpar sessão demo" if DEMO_MODE else "Sair", use_container_width=True):
+        auth.logout()
+        st.session_state.pop("demo_playlist", None)
+        st.rerun()
 
 # ---------- Área central ----------
 seed_ids, seed_artists, can_generate = [], [], True
@@ -81,17 +98,22 @@ seed_ids, seed_artists, can_generate = [], [], True
 if mode.startswith("Modo 1"):
     st.header("Seu perfil recente")
     if "top_tracks" not in st.session_state:
-        try:
-            st.session_state["top_tracks"] = get_top_tracks(token)
-        except SpotifyAPIError as e:
-            st.error(str(e)); st.session_state["top_tracks"] = []
+        if DEMO_MODE:
+            st.session_state["top_tracks"] = get_demo_top_tracks(df)
+        else:
+            try:
+                st.session_state["top_tracks"] = get_top_tracks(token)
+            except SpotifyAPIError as e:
+                st.error(str(e)); st.session_state["top_tracks"] = []
     top = st.session_state["top_tracks"]
     if top:
         cols = st.columns(5)
         for i, t in enumerate(top[:10]):
             with cols[i % 5]:
-                st.markdown(f'<div class="ktv-card"><img src="{t["album_cover_url"]}"/>'
-                            f'<b>{t["track_name"]}</b><small>{t["artist_name"]}</small></div>',
+                cover = (f'<img src="{escape(t["album_cover_url"], quote=True)}"/>'
+                         if t["album_cover_url"] else "")
+                st.markdown(f'<div class="ktv-card">{cover}'
+                            f'<b>{escape(t["track_name"])}</b><small>{escape(t["artist_name"])}</small></div>',
                             unsafe_allow_html=True)
         seed_ids = [t["track_id"] for t in top]
         seed_artists = [t["artist_name"] for t in top]
@@ -121,15 +143,19 @@ if st.button("✨ Gerar Playlist", type="primary", disabled=not can_generate):
     target, weights = engine.build_query(seed, energy, valence, tags)
     results = engine.recommend(target, weights, n=n_tracks, exclude_ids=seed_ids)
     st.session_state["recommendation_results"] = results
-    covers, failed_cover_ids = get_track_covers(results["track_id"].astype(str).tolist())
-    st.session_state["spotify_track_metadata"] = {
-        track_id: {"album_cover_url": cover_url}
-        for track_id, cover_url in covers.items()
-    }
-    if failed_cover_ids:
-        st.warning(f"Não foi possível carregar a capa de {len(failed_cover_ids)} faixa(s).")
+    if DEMO_MODE:
+        st.session_state["spotify_track_metadata"] = {}
+    else:
+        covers, failed_cover_ids = get_track_covers(results["track_id"].astype(str).tolist())
+        st.session_state["spotify_track_metadata"] = {
+            track_id: {"album_cover_url": cover_url}
+            for track_id, cover_url in covers.items()
+        }
+        if failed_cover_ids:
+            st.warning(f"Não foi possível carregar a capa de {len(failed_cover_ids)} faixa(s).")
     st.session_state["vibe_label"] = " + ".join(tags) or f"E{int(energy*100)} V{int(valence*100)}"
     st.session_state.pop("playlist_url", None)
+    st.session_state.pop("demo_playlist", None)
 
 # ---------- Resultados (RF04/RF05) ----------
 res: pd.DataFrame | None = st.session_state.get("recommendation_results")
@@ -138,15 +164,25 @@ if res is not None and not res.empty:
     head, act = st.columns([3, 1])
     head.subheader(f"Sua playlist · {len(res)} faixas")
     with act:
-        if st.button("💾 Salvar no Spotify", type="primary", use_container_width=True):
-            with st.spinner("Criando playlist..."):
-                try:
-                    st.session_state["playlist_url"] = create_playlist(
-                        token, res["track_id"].tolist(),
-                        st.session_state.get("vibe_label", ""))
-                except SpotifyAPIError as e:
-                    st.error(str(e))  # RN04
-    if url := st.session_state.get("playlist_url"):
+        save_label = "💾 Criar playlist demo" if DEMO_MODE else "💾 Salvar no Spotify"
+        if st.button(save_label, type="primary", use_container_width=True):
+            if DEMO_MODE:
+                st.session_state["demo_playlist"] = create_demo_playlist(
+                    res, st.session_state.get("vibe_label", ""))
+            else:
+                with st.spinner("Criando playlist..."):
+                    try:
+                        st.session_state["playlist_url"] = create_playlist(
+                            token, res["track_id"].tolist(),
+                            st.session_state.get("vibe_label", ""))
+                    except SpotifyAPIError as e:
+                        st.error(str(e))  # RN04
+
+    if DEMO_MODE:
+        if playlist := st.session_state.get("demo_playlist"):
+            st.success("Playlist criada no modo demo e guardada nesta sessão.")
+            st.caption(f'{playlist["name"]} · {len(playlist["tracks"])} faixas fictícias')
+    elif url := st.session_state.get("playlist_url"):
         st.success("Playlist salva na sua conta!")
         st.link_button("Abrir no Spotify", url)
 
@@ -173,11 +209,17 @@ if res is not None and not res.empty:
             if cover_url:
                 st.image(cover_url, use_container_width=True)
             else:
-                st.caption("Capa não disponível no Spotify")
+                st.caption("Capa fictícia indisponível" if DEMO_MODE else "Capa não disponível no Spotify")
+            track_details = f'<small>{r["similarity"]:.0%}'
+            if DEMO_MODE:
+                track_details += " · Demonstração</small>"
+            else:
+                track_details += (
+                    f' · <a href="https://open.spotify.com/track/{escape(str(r["track_id"]), quote=True)}" '
+                    f'target="_blank" rel="noopener noreferrer">Abrir ↗</a></small>'
+                )
             st.markdown(
                 f'<div class="ktv-card"><b>{escape(track_name)}</b>'
                 f'<small>{escape(artists)} · {escape(genre)}</small><br>'
-                f'<small><a href="https://open.spotify.com/track/{escape(str(r["track_id"]), quote=True)}" '
-                f'target="_blank" rel="noopener noreferrer">Abrir ↗</a>'
-                f' · {r["similarity"]:.0%}</small></div>', unsafe_allow_html=True)
+                f'{track_details}</div>', unsafe_allow_html=True)
     st.caption("Quer ajustar? Mude os controles na barra lateral e clique em Gerar Playlist de novo.")
