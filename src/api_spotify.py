@@ -66,13 +66,13 @@ def get_track_covers(track_ids: list[str]) -> tuple[dict[str, str], list[str]]:
     return covers, failed_ids
 
 
-def create_playlist(token: str, user_id: str, track_ids: list[str], vibe_label: str = "") -> str:
+def create_playlist(token: str, track_ids: list[str], vibe_label: str = "") -> str:
     """Cria a playlist (prefixo KeepTheVibe), adiciona faixas em lotes de 100 e retorna a URL."""
     sp = client(token)
     name = f"KeepTheVibe · {vibe_label or 'Mix'} · {datetime.now():%d/%m %H:%M}"
     try:
-        pl = sp.user_playlist_create(
-            user_id, name, public=False,
+        pl = sp.current_user_playlist_create(
+            name, public=False,
             description="Gerada pelo KeepTheVibe — recomendação baseada na sua vibe do momento.",
         )
         uris = [f"spotify:track:{tid}" for tid in track_ids]

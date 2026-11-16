@@ -6,7 +6,7 @@ from src.recommender import VibeRecommender
 def make_df():
     rows = []
     for i, (e, v) in enumerate([(0.9, 0.9), (0.95, 0.85), (0.1, 0.1), (0.15, 0.2), (0.5, 0.5)]):
-        rows.append(dict(track_id=f"t{i}", track_name=f"n{i}", artist_name=f"a{i}", album_name="x",
+        rows.append(dict(track_id=f"t{i}", track_name=f"n{i}", artists=f"a{i}", album_name="x",
                          album_cover_url="", danceability=0.5, energy=e, valence=v, tempo=120.0, genre="g"))
     return pd.DataFrame(rows)
 
@@ -28,3 +28,11 @@ def test_seed_tracks_are_excluded():
     seed = eng.seed_vector(["t0"])
     t, w = eng.build_query(seed, 0.9, 0.9)
     assert "t0" not in eng.recommend(t, w, n=5, exclude_ids=["t0"])["track_id"].tolist()
+
+
+def test_seed_vector_falls_back_to_artist_name():
+    eng = VibeRecommender(make_df())
+
+    seed = eng.seed_vector(["unknown-track"], ["a0"])
+
+    np.testing.assert_array_equal(seed, eng.X[0])

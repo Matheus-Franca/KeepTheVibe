@@ -24,6 +24,7 @@ def load_dataset(path: Path = DATA_PATH) -> pd.DataFrame:
 class VibeRecommender:
     def __init__(self, df: pd.DataFrame):
         self.df = df.reset_index(drop=True)
+        self.artist_column = "artists" if "artists" in self.df else "artist_name"
         self.scaler = MinMaxScaler().fit(self.df[FEATURES])
         self.X = self.scaler.transform(self.df[FEATURES])
 
@@ -32,7 +33,7 @@ class VibeRecommender:
         if track_ids:
             mask |= self.df["track_id"].isin(track_ids)
         if not mask.any() and artists:
-            mask |= self.df["artist_name"].str.lower().isin([a.lower() for a in artists])
+            mask |= self.df[self.artist_column].str.lower().isin([a.lower() for a in artists])
         return self.X[mask.values].mean(axis=0) if mask.any() else None
 
     def build_query(self, seed: np.ndarray | None, energy: float, valence: float,
@@ -70,5 +71,5 @@ class VibeRecommender:
         if exclude_ids:
             out = out[~out["track_id"].isin(exclude_ids)]
         out = out.sort_values("score", ascending=False)
-        out = out.groupby("artists", sort=False).head(2)  # diversidade
+        out = out.groupby(self.artist_column, sort=False).head(2)  # diversidade
         return out.head(n).reset_index(drop=True)

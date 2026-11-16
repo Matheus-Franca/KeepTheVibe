@@ -142,7 +142,7 @@ if res is not None and not res.empty:
             with st.spinner("Criando playlist..."):
                 try:
                     st.session_state["playlist_url"] = create_playlist(
-                        token, st.session_state["user_id"], res["track_id"].tolist(),
+                        token, res["track_id"].tolist(),
                         st.session_state.get("vibe_label", ""))
                 except SpotifyAPIError as e:
                     st.error(str(e))  # RN04
